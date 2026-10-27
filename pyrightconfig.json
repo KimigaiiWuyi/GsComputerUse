@@ -1,0 +1,6 @@
+{
+  "include": ["GsComputerUse", "tests"],
+  "extraPaths": ["../../..", "../../../gsuid_core"],
+  "typeCheckingMode": "basic",
+  "pythonVersion": "3.11"
+}
