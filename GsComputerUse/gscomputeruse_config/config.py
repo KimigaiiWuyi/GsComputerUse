@@ -21,12 +21,12 @@ from .host import host_label
 ROOT = get_res_path("GsComputerUse")
 PROBE_ENDPOINT = "/api/gs_computer_use/probe"
 _HOST = host_label()
-_BACKENDS = ("instabox", "cua")
+_BACKENDS = ("instabox", "simular", "cua")
 
 CONFIG_DEFAULT: dict[str, GSC] = {
     "probe": GsButtonConfig(
         title="检查电脑后端",
-        desc="查看本机规格，并检查 InstaBox API Key 或 CUA Driver。不会下载虚拟机。",
+        desc="查看本机规格，并检查 InstaBox API Key、Simular Key 或 CUA Driver。不会下载虚拟机。",
         data=ButtonState(),
         endpoint=PROBE_ENDPOINT,
         label="检查",
@@ -48,9 +48,9 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     ),
     "backend": GsStrConfig(
         title="电脑后端",
-        desc="instabox 是云端 Linux 桌面，本机只发请求。cua 操作本机已安装的 CUA Driver。2 核 2 GiB 请选 instabox。",
+        desc="instabox 或 simular 是云端 Linux 桌面，本机只发请求。cua 操作本机的 CUA Driver。小机器请选云端后端。",
         data="instabox",
-        options=["instabox", "cua"],
+        options=["instabox", "simular", "cua"],
     ),
     "instabox_api_key": GsStrConfig(
         title="InstaBox API Key",
@@ -63,6 +63,17 @@ CONFIG_DEFAULT: dict[str, GSC] = {
         desc="默认 https://api.instabox.sh。只接受 https，或本机 http://127.0.0.1。",
         data="https://api.instabox.sh",
     ),
+    "simular_api_key": GsStrConfig(
+        title="Simular Key",
+        desc="以 cb_ 开头，在 box.simular.ai/keys 创建。只填写在这项插件配置里。",
+        data="",
+        secret=True,
+    ),
+    "simular_mcp_url": GsStrConfig(
+        title="Simular MCP 地址",
+        desc="默认 https://mcp.box.simular.ai/mcp。只接受 https，或本机 http://127.0.0.1。",
+        data="https://mcp.box.simular.ai/mcp",
+    ),
     "cua_bin": GsStrConfig(
         title="CUA Driver 程序",
         desc="可执行文件名或绝对路径，例如 cua-driver。插件不会替你安装。",
@@ -70,7 +81,7 @@ CONFIG_DEFAULT: dict[str, GSC] = {
     ),
     "max_desktops": GsIntConfig(
         title="同时打开的桌面数",
-        desc="每个用户一个桌面。2 核或内存不超过 2560 MiB 时固定为 1。CUA Driver 固定为 1。最多 3。",
+        desc="每个用户一个桌面。2 核或内存不超过 2560 MiB 时固定为 1。Simular 和 CUA Driver 固定为 1。最多 3。",
         data=1,
         max_value=3,
     ),
@@ -133,7 +144,17 @@ def instabox_key() -> str:
     return flag_text("instabox_api_key")
 
 
-def key_problem(key: str) -> str:
+def simular_key() -> str:
+    return flag_text("simular_api_key")
+
+
+def key_problem(key: str, *, backend: str = "instabox") -> str:
+    if backend == "simular":
+        if not key:
+            return "还没有 Simular Key。"
+        if not key.startswith("cb_"):
+            return "这不是 Simular 的 Key。"
+        return ""
     if not key:
         return "还没有 InstaBox API Key。"
     if not key.startswith("ibk_"):
@@ -141,8 +162,8 @@ def key_problem(key: str) -> str:
     return ""
 
 
-def key_state(key: str) -> str:
-    problem = key_problem(key)
+def key_state(key: str, *, backend: str = "instabox") -> str:
+    problem = key_problem(key, backend=backend)
     if problem:
         return problem
     return "已填写"
@@ -161,6 +182,10 @@ def clean_base(raw: str) -> str:
 
 def instabox_base() -> str:
     return clean_base(flag_text("instabox_api_url") or "https://api.instabox.sh")
+
+
+def simular_url() -> str:
+    return clean_base(flag_text("simular_mcp_url") or "https://mcp.box.simular.ai/mcp")
 
 
 def cua_binary() -> str:

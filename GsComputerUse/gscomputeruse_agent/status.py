@@ -8,7 +8,14 @@ from gsuid_core.models import Event
 
 from ..gscomputeruse_config.host import seat_limit, host_budget, display_note, budget_report
 from ..gscomputeruse_desktop.who import user_key
-from ..gscomputeruse_config.config import ROOT, key_state, instabox_key, configured_max, desired_backend
+from ..gscomputeruse_config.config import (
+    ROOT,
+    key_state,
+    simular_key,
+    instabox_key,
+    configured_max,
+    desired_backend,
+)
 from ..gscomputeruse_desktop.lease import LeaseBook
 from ..gscomputeruse_desktop.service import active_count
 
@@ -22,11 +29,21 @@ def status_text(ev: Event | None) -> str:
     book.load()
     row = book.get(user_key(ev))
     lease = row["name"] if row is not None else "还没有"
+    if backend == "simular":
+        label = "Simular Key"
+        state = key_state(simular_key(), backend="simular")
+    elif backend == "cua":
+        label = "CUA Driver"
+        state = "不需要密钥"
+    else:
+        label = "InstaBox API Key"
+        state = key_state(instabox_key())
     return budget_report(
         budget,
         backend=backend,
         seats=seat_limit(budget, backend, configured_max()),
-        key_state=key_state(instabox_key()),
+        key_state=state,
+        key_label=label,
         display=display_note(budget.system),
         lease=lease,
         active=active_count(),

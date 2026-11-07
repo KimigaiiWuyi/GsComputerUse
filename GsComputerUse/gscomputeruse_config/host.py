@@ -89,7 +89,7 @@ def shot_byte_cap(budget: HostBudget) -> int:
 
 
 def seat_limit(budget: HostBudget, backend: str, asked: int) -> int:
-    if backend == "cua" or budget.tight:
+    if backend in {"cua", "simular"} or budget.tight:
         return 1
     if asked < 1:
         return 1
@@ -117,15 +117,18 @@ def budget_report(
     display: str,
     lease: str,
     active: int,
+    key_label: str = "InstaBox API Key",
 ) -> str:
     width, height = screen_size(budget)
     cap_kib = shot_byte_cap(budget) // 1024
     if budget.tight:
         limit = "本机是 2 核或内存不超过 2560 MiB，同时只开 1 个桌面。配置写再多也按 1 个。"
     else:
-        limit = "本机高于 2 核 2 GiB。InstaBox 最多同时开 3 个桌面。CUA Driver 仍是 1 个。"
+        limit = "本机高于 2 核 2 GiB。InstaBox 最多同时开 3 个桌面。Simular 和 CUA Driver 仍是 1 个。"
     if backend == "cua":
         where = "CUA Driver 操作本机已有桌面，不另开虚拟机。同一时间只有一个用户。"
+    elif backend == "simular":
+        where = "Simular box 是云端 Ubuntu 桌面，所有用户共用同一台，同一时间只有一个用户。空闲时自动休眠。"
     else:
         where = "InstaBox 没有 2 GiB 的规格。插件先申请 2 核 4 GiB，账号不允许就用该账号的默认规格。桌面在云端。"
     lines = [
@@ -133,7 +136,7 @@ def budget_report(
         limit,
         f"后端是 {backend}。同时桌面 {seats} 个，当前占用 {active} 个。屏幕 {width}×{height}，截图上限 {cap_kib} KiB。",
         where,
-        f"InstaBox API Key：{key_state}。",
+        f"{key_label}：{key_state}。",
         f"你的桌面：{lease}。",
     ]
     if display:

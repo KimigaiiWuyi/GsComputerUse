@@ -34,6 +34,7 @@ from GsComputerUse.gscomputeruse_desktop.cua import (
     daemon_ready,
     session_label,
 )
+from GsComputerUse.gscomputeruse_desktop.mcp import ToolReply, McpSession
 from GsComputerUse.gscomputeruse_desktop.who import user_key
 from GsComputerUse.gscomputeruse_probe.probe import spec_note
 from GsComputerUse.gscomputeruse_desktop.pool import SessionPool
@@ -49,11 +50,22 @@ from GsComputerUse.gscomputeruse_config.config import (
     PROBE_ENDPOINT,
     key_state,
     clean_base,
+    key_problem,
     instabox_key,
 )
 from GsComputerUse.gscomputeruse_desktop.lease import Lease, LeaseBook, machine_name
 from GsComputerUse.gscomputeruse_desktop.errors import ComputerNotReady
 from GsComputerUse.gscomputeruse_desktop.actions import release, open_url, type_text
+from GsComputerUse.gscomputeruse_desktop.simular import (
+    BoxRef,
+    SimularClient,
+    SimularDesktop,
+    desk_keys,
+    parse_desk,
+    parse_page,
+    parse_boxes,
+    parse_windows_list,
+)
 from GsComputerUse.gscomputeruse_desktop.instabox import (
     MachineRef,
     InstaboxClient,
@@ -149,6 +161,21 @@ class _Runner:
         if tool in self.by_tool:
             return self.by_tool[tool]
         return ProcResult(0, "", "")
+
+
+class _Sim:
+    def __init__(self, replies: list[ToolReply]) -> None:
+        self.replies = list(replies)
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def tool(self, name: str, arguments: dict[str, object]) -> ToolReply:
+        self.calls.append((name, arguments))
+        if not self.replies:
+            return ToolReply("no reply", [], True)
+        return self.replies.pop(0)
+
+    async def aclose(self) -> None:
+        return None
 
 
 def _pool(
@@ -675,3 +702,276 @@ def _object(text: str) -> dict[str, object]:
     raw = json.loads(text)
     assert isinstance(raw, dict)
     return raw
+
+
+def test_simular_ensure_wakes_the_leased_box(tmp_path: Path) -> None:
+    boxes = json.dumps(
+        {
+            "boxes": [
+                {"box_id": "cb-a", "name": "main", "state": "running"},
+                {"box_id": "cb-b", "name": "second", "state": "hibernated"},
+            ]
+        }
+    )
+    sim = _Sim(
+        [
+            ToolReply(boxes, [], False),
+            ToolReply('{"state":"running"}', [], False),
+        ]
+    )
+    path = tmp_path / "leases.json"
+    book = LeaseBook(path)
+    book.put({"tenant": "bot:u", "backend": "simular", "machine_id": "cb-b", "name": "second"})
+
+    async def _run() -> str:
+        found = await SimularClient(sim, book).ensure("bot:u")
+        return found.box_id
+
+    assert asyncio.run(_run()) == "cb-b"
+    assert sim.calls[1] == ("box_wake", {"box": "cb-b"})
+    loaded = LeaseBook(path)
+    loaded.load()
+    row = loaded.get("bot:u")
+    assert row is not None and row["backend"] == "simular"
+
+
+def test_simular_ensure_uses_the_first_box(tmp_path: Path) -> None:
+    boxes = json.dumps({"boxes": [{"box_id": "cb-a", "name": "main", "state": "running"}]})
+    sim = _Sim([ToolReply(boxes, [], False)])
+
+    async def _run() -> str:
+        found = await SimularClient(sim, LeaseBook(tmp_path / "leases.json")).ensure("bot:u")
+        return found.box_id
+
+    assert asyncio.run(_run()) == "cb-a"
+    assert sim.calls == [("box_list", {})]
+
+
+def test_simular_ensure_creates_a_box_when_the_account_has_none(tmp_path: Path) -> None:
+    boxes = json.dumps({"boxes": [{"box_id": "cb-a", "name": "main", "state": "starting"}]})
+    sim = _Sim(
+        [
+            ToolReply('{"boxes":[]}', [], False),
+            ToolReply('{"ok":true}', [], False),
+            ToolReply(boxes, [], False),
+            ToolReply('{"ok":true}', [], False),
+        ]
+    )
+
+    async def _run() -> str:
+        found = await SimularClient(sim, LeaseBook(tmp_path / "leases.json")).ensure("bot:u")
+        return found.box_id
+
+    assert asyncio.run(_run()) == "cb-a"
+    assert sim.calls[0] == ("box_list", {})
+    assert sim.calls[1] == ("box_wake", {"box": ""})
+    assert sim.calls[3] == ("box_wake", {"box": "cb-a"})
+
+
+def test_simular_release_hibernates_by_box_id(tmp_path: Path) -> None:
+    sim = _Sim([ToolReply('{"ok":true}', [], False)])
+
+    async def _run() -> str:
+        client = SimularClient(sim, LeaseBook(tmp_path / "leases.json"))
+        desk = SimularDesktop(client, BoxRef("cb-a", "main", "running"), budget_for("linux", "x86_64", 4, 8192))
+        return await desk.release()
+
+    assert asyncio.run(_run()) == "云端桌面已休眠。"
+    assert sim.calls == [("box_hibernate", {"box": "cb-a"})]
+
+
+def test_simular_desktop_marks_and_clicks(tmp_path: Path) -> None:
+    windows = json.dumps(
+        [
+            {"id": "1.7/1", "title": "Desktop", "role": "window", "shell": True},
+            {"id": "1.9/1", "title": "Notes", "role": "window"},
+            {"id": "1.9/9", "title": "Pad", "role": "window"},
+        ]
+    )
+    snap = json.dumps(
+        {
+            "window": {"title": "Notes"},
+            "text": '- window "Notes" [id=1.9/1]\n  - button "Save" [id=1.9/8]\n  - alert [id=1.9/3]\n',
+        }
+    )
+    screen = json.dumps({"width": 1280, "height": 800})
+    page = 'Page: Example (https://example.test)\n- button "Go" [ref=e7]\n- text "hi"\n'
+    sim = _Sim(
+        [
+            ToolReply(windows, [], False),
+            ToolReply(snap, [], False),
+            ToolReply(screen, [], False),
+            ToolReply('{"ok":true}', [], False),
+            ToolReply(windows, [], False),
+            ToolReply(snap, [], False),
+            ToolReply(page, [], False),
+            ToolReply(page, [], False),
+        ]
+    )
+
+    async def _run() -> tuple[str, str, str, str]:
+        client = SimularClient(sim, LeaseBook(tmp_path / "leases.json"))
+        desk = SimularDesktop(client, BoxRef("cb-a", "main", "running"), budget_for("linux", "x86_64", 4, 8192))
+        looked = await desk.look()
+        clicked = await desk.click("e1", foreground=False)
+        opened = await desk.open_url("https://example.test")
+        again = await desk.click("e1", foreground=False)
+        return looked, clicked, opened, again
+
+    looked, clicked, opened, again = asyncio.run(_run())
+    assert "e1" in looked and "Save" in looked
+    assert "e2" in looked and "Pad" in looked  # 其他窗口进 mark
+    assert "e3" not in looked  # alert 不进 mark
+    assert sim.calls[3] == ("desk", {"op": "press", "id": "1.9/8"})
+    assert "Go" in opened
+    assert sim.calls[7] == ("browser_click", {"ref": "e7"})
+    assert "e1" in again
+
+
+def test_simular_shot_writes_png(tmp_path: Path) -> None:
+    raw = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+    sim = _Sim([ToolReply("", [raw], False)])
+
+    async def _run() -> str:
+        client = SimularClient(sim, LeaseBook(tmp_path / "leases.json"))
+        desk = SimularDesktop(client, BoxRef("cb-a", "main", "running"), budget_for("linux", "x86_64", 4, 8192))
+        return await desk.shot(str(tmp_path / "s.png"))
+
+    path = asyncio.run(_run())
+    assert Path(path).read_bytes() == raw
+
+
+def test_simular_seat_key_and_desk_keys() -> None:
+    roomy = budget_for("linux", "x86_64", 8, 16384)
+    assert seat_limit(roomy, "simular", 3) == 1
+    assert key_problem("cb_ok", backend="simular") == ""
+    assert "Simular" in key_problem("", backend="simular")
+    assert "Simular" in key_problem("ibk_x", backend="simular")
+    assert desk_keys("ctrl+l") == "ctrl+l"
+    assert desk_keys("enter") == "Return"
+    assert desk_keys("F5") == "F5"
+    assert desk_keys("not a key!") == ""
+
+
+def test_simular_parses_boxes_pages_and_desk() -> None:
+    assert parse_boxes('{"boxes":[{"box_id":"cb-1","name":"main","state":"running"}]}') == [
+        BoxRef("cb-1", "main", "running")
+    ]
+    assert parse_boxes('{"boxes":[{"box_id":"cb-2","name":"b","state":"BOX_STATE_RUNNING"}]}')[0].state == "running"
+    assert parse_boxes('[{"id":"cb-3","name":"c","state":"hibernated"}]')[0].box_id == "cb-3"
+    assert parse_boxes("junk") == []
+    others = parse_windows_list(
+        json.dumps(
+            [
+                {"id": "1.7/1", "title": "Desktop", "role": "window", "shell": True},
+                {"id": "1.9/1", "title": "Notes", "role": "window"},
+                {"id": "1.9/9", "title": "Pad", "role": "window"},
+            ]
+        ),
+        skip="Notes",
+    )
+    assert [row.token for row in others] == ["1.9/9"]
+    assert [row.name for row in others] == ["Pad"]
+    page = parse_page('Page: T (https://x)\n- link "A" [ref=e3] href="/a"\n- text "hi"\n- button [ref=e9]\n')
+    assert page.title == "T (https://x)"
+    assert [row.token for row in page.elements] == ["e3", "e9"]
+    snap = parse_desk(
+        json.dumps(
+            {
+                "window": {"title": "W"},
+                "text": '- window "W" [id=1/1]\n  - button "B" [id=1/2]\n  - text "x" [id=1/3]\n',
+            }
+        )
+    )
+    assert snap.title == "W"
+    assert [row.token for row in snap.elements] == ["1/2"]
+    textbox = parse_desk(json.dumps({"window": {"title": "W"}, "text": '- textbox "Addr" [id=1/7]: "youtube.com"\n'}))
+    assert textbox.elements[0].token == "1/7"
+    assert textbox.elements[0].name == "Addr"
+
+
+def test_mcp_session_sends_bearer_and_reads_sse() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if b"initialize" in request.content:
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": 1, "result": {"capabilities": {}}},
+                headers={"mcp-session-id": "s1"},
+            )
+        if b"initialized" in request.content:
+            return httpx.Response(202)
+        body = (
+            "event: message\n"
+            'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"hi"}],"isError":false}}\n\n'
+        )
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async def _run() -> ToolReply:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        session = McpSession(client, "https://mcp.test/mcp", "cb_test")
+        try:
+            return await session.tool("box_list", {})
+        finally:
+            await client.aclose()
+
+    reply = asyncio.run(_run())
+    assert reply.text == "hi" and reply.failed is False
+    assert seen[0].headers["authorization"] == "Bearer cb_test"
+    assert "cb_test" not in str(seen[0].url)
+    assert seen[2].headers["mcp-session-id"] == "s1"
+
+
+def test_mcp_sse_picks_the_reply_over_notifications() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if b"initialize" in request.content:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+        if b"initialized" in request.content:
+            return httpx.Response(202)
+        body = (
+            "event: message\n"
+            'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"hi"}]}}\n\n'
+            "event: message\n"
+            'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"t":1}}\n\n'
+        )
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    async def _run() -> ToolReply:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        session = McpSession(client, "https://mcp.test/mcp", "cb_test")
+        try:
+            return await session.tool("box_list", {})
+        finally:
+            await client.aclose()
+
+    reply = asyncio.run(_run())
+    assert reply.text == "hi" and reply.failed is False
+
+
+def test_mcp_tool_error_comes_back_as_failure() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if b"initialize" in request.content:
+            return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {}})
+        if b"initialized" in request.content:
+            return httpx.Response(202)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {"isError": True, "content": [{"type": "text", "text": "nope"}]},
+            },
+        )
+
+    async def _run() -> ToolReply:
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        session = McpSession(client, "https://mcp.test/mcp", "cb_test")
+        try:
+            return await session.tool("desk", {"op": "windows"})
+        finally:
+            await client.aclose()
+
+    reply = asyncio.run(_run())
+    assert reply.failed and reply.text == "nope"

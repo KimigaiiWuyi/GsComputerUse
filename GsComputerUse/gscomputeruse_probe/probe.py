@@ -10,16 +10,20 @@ from gsuid_core.utils.plugins_config.button_action import ButtonReport, register
 
 from ..gscomputeruse_config.host import seat_limit, host_budget, screen_size, shot_byte_cap
 from ..gscomputeruse_desktop.cua import SubprocessRunner, daemon_ready, install_hint
+from ..gscomputeruse_desktop.mcp import McpSession
 from ..gscomputeruse_config.config import (
     PROBE_ENDPOINT,
     cua_binary,
     key_problem,
+    simular_key,
+    simular_url,
     instabox_key,
     instabox_base,
     configured_max,
     desired_backend,
 )
 from ..gscomputeruse_desktop.errors import ComputerNotReady
+from ..gscomputeruse_desktop.simular import parse_boxes
 from ..gscomputeruse_desktop.transport import HttpxTransport
 
 
@@ -27,7 +31,7 @@ def probe_fields() -> dict[str, str]:
     budget = host_budget()
     backend = desired_backend()
     width, height = screen_size(budget)
-    profile = "同时 1 个桌面" if budget.tight else "InstaBox 最多 3 个，CUA Driver 仍是 1 个"
+    profile = "同时 1 个桌面" if budget.tight else "InstaBox 最多 3 个，Simular 和 CUA Driver 仍是 1 个"
     return {
         "host": f"{budget.system}-{budget.cpu}",
         "cores": str(budget.cores),
@@ -56,6 +60,8 @@ async def probe_computer(report: ButtonReport) -> None:
     backend = desired_backend()
     if backend == "cua":
         ready = await _probe_cua()
+    elif backend == "simular":
+        ready = await _probe_simular()
     else:
         ready = await _probe_instabox()
     fields["ready"] = ready
@@ -91,6 +97,29 @@ async def _probe_instabox() -> str:
     if reply.status >= 400 or reply.too_big:
         return "InstaBox 没有返回账号信息。"
     return spec_note(reply.text)
+
+
+async def _probe_simular() -> str:
+    key = simular_key()
+    problem = key_problem(key, backend="simular")
+    if problem:
+        return problem
+    url = simular_url()
+    if not url:
+        return "Simular MCP 地址无效。只接受 https，或本机的 http://127.0.0.1。"
+    client = httpx.AsyncClient(timeout=httpx.Timeout(15.0, read=60.0), follow_redirects=False, trust_env=False)
+    session = McpSession(client, url, key)
+    try:
+        reply = await session.tool("box_list", {})
+    finally:
+        await client.aclose()
+    if reply.failed:
+        return reply.text
+    boxes = parse_boxes(reply.text)
+    if not boxes:
+        return "连接成功，但账号下还没有云端桌面。去 box.simular.ai 开一台。"
+    running = sum(1 for box in boxes if box.state == "running")
+    return f"连接成功。账号下有 {len(boxes)} 台云端桌面，{running} 台在跑。同一时间所有用户共用一台。"
 
 
 async def _probe_cua() -> str:

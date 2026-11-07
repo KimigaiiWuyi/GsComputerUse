@@ -1,6 +1,6 @@
 # GsComputerUse
 
-给 GsCore 的 Agent 提供电脑操作。工具不绑定具体后端。在插件配置里选 InstaBox 或 CUA Driver，然后点「检查」。检查不会下载虚拟机，也不会安装程序。
+给 GsCore 的 Agent 提供电脑操作。工具不绑定具体后端。在插件配置里选 InstaBox、Simular box 或 CUA Driver，然后点「检查」。检查不会下载虚拟机，也不会安装程序。
 
 命令 `电脑状态` 显示本机核数、内存、同时桌面数、屏幕和截图上限。客人也可以看状态。操作电脑默认只有主人能用，可在配置里关掉「仅主人可用」。
 
@@ -11,6 +11,14 @@ InstaBox 是云端 Linux amd64 桌面。本机只发 HTTPS 请求，所以 2 核
 InstaBox 没有 2 GiB 的规格。插件先申请 2 核 4 GiB。免费账号只有 4 核 8 GiB。账号拒绝这个规格时，插件改用该账号的默认规格，并在检查结果里写明。
 
 API Key 以 `ibk_` 开头，只填写在插件配置「InstaBox API Key」里。空闲后插件暂停云端机器，不删除。
+
+## Simular box
+
+Simular box 是云端 Ubuntu 桌面，走一个 MCP 连接（`https://mcp.box.simular.ai/mcp`）。本机只发 HTTPS 请求。
+
+Key 以 `cb_` 开头，在 box.simular.ai/keys 创建，只填写在插件配置「Simular Key」里。账号一次只能跑一台机器时，所有用户共用同一台云端桌面，同一时间只有一个用户。空闲后插件休眠云端机器，不删除。
+
+打开网址走 box 自带的 Chrome 浏览器，屏幕文本里的 e 编号是网页元素。桌面控件走系统无障碍树。
 
 ## CUA Driver
 
@@ -24,7 +32,7 @@ CUA Driver 操作这台机器已经登录的桌面，不另开虚拟机。同一
 
 2 核，或内存不超过 2560 MiB 时：同时 1 个桌面，屏幕 1024×600，超过 512 KiB 的截图会删掉。
 
-高于这个规格时：InstaBox 最多同时 3 个桌面，CUA Driver 仍是 1 个，屏幕 1280×800，截图上限 1536 KiB。
+高于这个规格时：InstaBox 最多同时 3 个桌面，Simular 和 CUA Driver 仍是 1 个，屏幕 1280×800，截图上限 1536 KiB。
 
 每个 `bot_id + user_id` 单独一台桌面，不按群拆开。群聊里看起来像密码或密钥的文字不会发到桌面，请改走私聊。
 
